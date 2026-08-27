@@ -15,6 +15,8 @@ import { pushToast } from "../notifications"
 import { logContractCall } from "./logger"
 import { trackTransaction, type HorizonTransactionMeta } from "./tx-tracker"
 import { RpcHealthManager, parseRpcUrls } from "./rpc-health"
+import { trackContractFailure } from "../analytics"
+import { classifyError, parseContractErrorCode } from "../contract-errors"
 import { idempotencyManager } from "./idempotency"
 import {
   addPendingTransaction,
@@ -403,6 +405,20 @@ async function executeSignAndSubmit(
 ): Promise<TransactionResult> {
   const startMs = Date.now()
 
+  // Derive network label for observability (issue #1465)
+  const networkLabel = NETWORK_PASSPHRASE.includes("Test SDF") ? "TESTNET" : "MAINNET"
+
+  /** Emit a contract failure observation with sanitized context. */
+  function observeFailure(method: string, errorMsg: string, txHash?: string) {
+    trackContractFailure({
+      method,
+      network: networkLabel,
+      errorClass: classifyError(errorMsg),
+      txHash,
+      contractErrorCode: parseContractErrorCode(errorMsg) ?? undefined,
+    })
+  }
+
   // Helper: emit a structured breadcrumb for this transaction lifecycle event.
   function logTx(
     stage: string,
@@ -432,6 +448,7 @@ async function executeSignAndSubmit(
       }
 
       logTx("timebounds_check", "failed", { error: errorMsg })
+      observeFailure("timebounds_check", errorMsg)
       return {
         status: TransactionStatus.Failed,
         txHash: "",
@@ -445,6 +462,7 @@ async function executeSignAndSubmit(
     if (!freighterNetworkMatches(netBeforeSign.networkPassphrase)) {
       const message = `Transaction blocked: Freighter is on the wrong network. Expected ${getExpectedNetworkLabel()}. Switch Freighter to the app network and try again.`
       logTx("network_check", "failed", { error: message })
+      observeFailure("network_check", message)
       handlers.onError?.(message)
       return {
         status: TransactionStatus.Failed,
@@ -468,6 +486,7 @@ async function executeSignAndSubmit(
       if (!freighterNetworkMatches(netAfterSign.networkPassphrase)) {
         const message = NETWORK_MISMATCH_MESSAGE
         logTx("network_check_post_sign", "failed", { error: message })
+        observeFailure("network_check_post_sign", message)
         handlers.onError?.(message)
         return {
           status: TransactionStatus.Failed,
@@ -480,6 +499,7 @@ async function executeSignAndSubmit(
       if (signedTx.source !== currentAddress) {
         const message = "Account changed after signing. Please re-confirm."
         logTx("account_check", "failed", { error: message })
+        observeFailure("account_check", message)
         handlers.onError?.(message)
         return {
           status: TransactionStatus.Failed,
@@ -516,19 +536,19 @@ async function executeSignAndSubmit(
             txHash: submitResponse.hash,
           }
         } else {
-          logTx("poll", "failed", {
-            txHash: submitResponse.hash,
-            error: "Transaction failed after submission",
-          })
+          const pollError = "Transaction failed after submission"
+          logTx("poll", "failed", { txHash: submitResponse.hash, error: pollError })
+          observeFailure("poll", pollError, submitResponse.hash)
           return {
             status: TransactionStatus.Failed,
             txHash: submitResponse.hash,
-            error: "Transaction failed after submission",
+            error: pollError,
           }
         }
       } else if (submitResponse.status === "DUPLICATE") {
         const error = "This transaction is a duplicate. Please wait a moment or try again."
         logTx("submit", "failed", { txHash: submitResponse.hash, submitStatus: "DUPLICATE", error })
+        observeFailure("submit_duplicate", error, submitResponse.hash)
         return {
           status: TransactionStatus.Failed,
           txHash: submitResponse.hash,
@@ -541,6 +561,7 @@ async function executeSignAndSubmit(
           submitStatus: "TRY_AGAIN_LATER",
           error: message,
         })
+        observeFailure("submit_try_again_later", message, submitResponse.hash)
         handlers.onError?.(message)
         return {
           status: TransactionStatus.Failed,
@@ -550,6 +571,7 @@ async function executeSignAndSubmit(
       } else if (submitResponse.status === "ERROR") {
         const error = "Transaction error. Please contact support or check your inputs."
         logTx("submit", "failed", { txHash: submitResponse.hash, submitStatus: "ERROR", error })
+        observeFailure("submit_error", error, submitResponse.hash)
         return {
           status: TransactionStatus.Failed,
           txHash: submitResponse.hash,
@@ -562,6 +584,7 @@ async function executeSignAndSubmit(
           submitStatus: submitResponse.status,
           error,
         })
+        observeFailure("submit_unknown", error, submitResponse.hash)
         return {
           status: TransactionStatus.Failed,
           txHash: submitResponse.hash,
@@ -569,16 +592,19 @@ async function executeSignAndSubmit(
         }
       }
     } else {
-      logTx("sign", "failed", { error: "Signing failed" })
+      const signingError = "Signing failed"
+      logTx("sign", "failed", { error: signingError })
+      observeFailure("sign", signingError)
       return {
         status: TransactionStatus.Failed,
         txHash: "",
-        error: "Signing failed",
+        error: signingError,
       }
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error during signing/submission"
     logTx("sign_and_submit", "error", { error: message })
+    observeFailure("sign_and_submit", message)
     if (isDev) {
       console.error("Transaction submission error:", err)
     }
