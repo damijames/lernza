@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatTokens } from "@/lib/utils"
 import { cn } from "@/lib/utils"
+import { TransactionLink } from "@/components/TransactionLink"
 
 interface RewardsShowcaseProps {
   rewards: RewardShowcase[]
@@ -208,15 +209,7 @@ export function RewardsShowcase({
                             </span>
                           </div>
                           {reward.txHash && viewerIsOwner && (
-                            <a
-                              href={`https://stellar.expert/explorer/testnet/tx/${reward.txHash}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-accent inline-flex items-center gap-1 font-bold underline underline-offset-2"
-                            >
-                              View tx
-                              <ExternalLink className="h-3 w-3" />
-                            </a>
+                            <TransactionLink txHash={reward.txHash} status="confirmed" label="View tx" />
                           )}
                         </div>
                       </div>

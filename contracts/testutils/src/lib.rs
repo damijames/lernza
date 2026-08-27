@@ -1,5 +1,9 @@
 #![no_std]
 
+pub mod fixtures;
+
+pub use fixtures::{Accounts, Fixture, QuestBuilder, isolated_env};
+
 use certificate::{CertificateContract, CertificateContractClient};
 use common::Visibility;
 use milestone::{MilestoneContract, MilestoneContractClient};
